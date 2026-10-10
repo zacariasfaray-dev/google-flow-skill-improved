@@ -444,3 +444,45 @@ async def wait_for_n_images(n: int, timeout_ms: int = 300000, max_retries: int =
             print(f"    [wait] Pipeline: {ready}/{n} imagens prontas ({elapsed}s)...")
         await asyncio.sleep(2)
     raise TimeoutError(f"Pipeline: só {await count_ready_images()}/{n} imagens prontas em {timeout_ms // 1000}s")
+
+
+async def wait_until_percent(target_percent: int = 25, timeout_ms: int = 40000) -> bool:
+    """Espera até que a geração ativa no canvas atinja pelo menos target_percent% (ex: 25%)."""
+    page = await get_page()
+    deadline = time.monotonic() + timeout_ms / 1000
+    start = time.monotonic()
+    
+    js = f"""() => {{
+        try {{
+            const cards = document.querySelectorAll('{SEL_RESULT_CARD}');
+            if (!cards.length) return 0;
+            for (const card of cards) {{
+                const textContent = card.innerText || "";
+                const matchPercent = textContent.match(/\\b(\\d+)%\\b/);
+                if (matchPercent) {{
+                    return parseInt(matchPercent[1], 10);
+                }}
+            }}
+            return 0;
+        }} catch(e) {{ return 0; }}
+    }}"""
+    
+    last_log = -5
+    print(f"    [pipeline-25%] Monitorando progresso da geração para atingir {target_percent}%...")
+    while time.monotonic() < deadline:
+        elapsed = int(time.monotonic() - start)
+        try:
+            val = await page.evaluate(js)
+            if val >= target_percent:
+                print(f"    [pipeline-25%] Marca de {val}% atingida ({elapsed}s)! Liberando envio do próximo prompt...")
+                return True
+        except Exception:
+            pass
+        if elapsed - last_log >= 5:
+            last_log = elapsed
+            print(f"    [pipeline-25%] Aguardando progresso da barra... ({elapsed}s)")
+        await asyncio.sleep(1.0)
+    
+    print(f"    [pipeline-25%] Progresso suficiente atingido. Liberando próximo prompt...")
+    return False
+

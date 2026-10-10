@@ -254,6 +254,11 @@ async def _run_image_pipeline(project_dir, jobs, total, d_ratio, d_img_model, ga
         ratio = job.get("ratio", d_ratio)
         model = job.get("model", d_img_model)
         print(f"\n--- [{i}/{total}] image :: {name} ---")
+        if int(job.get("count", 1)) != 1:
+            err = "Esta CLI descarga una imagen por trabajo. Para un lote, usa varios jobs image con count=1."
+            print(f"  ERROR en '{name}': {err}")
+            results.append({"name": name, "type": "image", "ok": False, "error": err})
+            continue
         try:
             await _submit_image(
                 prompt, ratio, model,
@@ -392,11 +397,16 @@ async def cmd_batch(args) -> int:
                 continue
             if i > 1:
                 delay_sec = job.get("delay", d_delay)
-                if delay_sec > 0:
+                trigger_pct = job.get("trigger_percent", defaults.get("trigger_percent", getattr(args, "trigger_percent", 25)))
+                if trigger_pct > 0:
+                    print(f"\n[batch-25%] Aguardando a geração anterior atingir {trigger_pct}% (ou max {delay_sec}s) para enviar o próximo prompt...")
+                    await flow.wait_until_percent(trigger_pct, timeout_ms=delay_sec * 1000)
+                elif delay_sec > 0:
                     print(f"\n[batch] Aguardando {delay_sec}s antes da próxima geração para evitar limites de taxa e erros de política...")
                     for remaining in range(delay_sec, 0, -5):
                         print(f"  ... {remaining}s restantes")
                         await asyncio.sleep(min(5, remaining))
+
 
             jtype = job.get("type", "image")
             name = job.get("name") or f"{jtype}_{i:02d}"
@@ -510,6 +520,8 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("jobfile")
     pb.add_argument("--out", default=str(DEFAULT_OUT))
     pb.add_argument("--delay", type=int, default=25, help="Segundos de espera entre cada generación (defecto: 25s).")
+    pb.add_argument("--trigger-percent", type=int, default=25, help="Porcentaje de progreso para disparar el siguiente prompt (defecto: 25%).")
+
 
 
     pc = sub.add_parser("clean", help="Borrar resultados de outputs.")

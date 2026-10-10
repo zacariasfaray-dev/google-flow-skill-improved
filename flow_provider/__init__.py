@@ -27,7 +27,7 @@ from .canvas import (
     capture_newest_asset_name,
 )
 from .prompt import submit_prompt
-from .wait import wait_for_image, wait_for_video, wait_for_n_images, count_ready_images
+from .wait import wait_for_image, wait_for_video, wait_for_n_images, count_ready_images, wait_until_percent
 from .download import download_latest
 
 __all__ = [
@@ -36,7 +36,8 @@ __all__ = [
     "select_ingredients_by_name", "select_frame_from_project",
     "upload_frame", "get_canvas_count", "capture_newest_asset_name",
     "submit_prompt",
-    "wait_for_image", "wait_for_video", "wait_for_n_images", "count_ready_images",
+    "wait_for_image", "wait_for_video", "wait_for_n_images", "count_ready_images", "wait_until_percent",
+
     "download_latest",
     "generate_video_from_text",
     "generate_video_from_frame",
