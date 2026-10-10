@@ -30,17 +30,21 @@ SEL_ERROR_TEXT = (
     ':text("No se pudo generar"), :text("Se produjo un error"), '
     ':text("Falhou"), :text("pode violar as nossas políticas"), '
     ':text("violam nossas políticas"), :text("couldn\'t generate"), '
-    ':text("may violate our policies"), :text("infringir nuestras políticas")'
+    ':text("may violate our policies"), :text("infringir nuestras políticas"), '
+    ':text("atividade invulgar"), :text("extensões do navegador"), '
+    ':text("actividad inusual"), :text("unusual activity")'
 )
 _ERROR_CARD_RE = re.compile(
     r"No se pudo generar|Se produjo un error|Falhou|violar as nossas "
-    r"políticas|violam nossas políticas|couldn't generate|violate our policies|infringir nuestras políticas",
+    r"políticas|violam nossas políticas|couldn't generate|violate our policies|infringir nuestras políticas|"
+    r"atividade invulgar|extensões do navegador|actividad inusual|unusual activity",
     re.IGNORECASE,
 )
-# Rechazo por política: Flow NO lo cobra y reintentarlo es inútil.
+# Rechazo por política o atividade invulgar: Flow NO lo cobra.
 _POLICY_RE = re.compile(
     r"pode violar as nossas políticas|violam nossas políticas|violate our policies|violar las "
-    r"políticas|nossas políticas|infringir nuestras políticas|política de conteúdo",
+    r"políticas|nossas políticas|infringir nuestras políticas|política de conteúdo|"
+    r"atividade invulgar|extensões do navegador|actividad inusual|unusual activity",
     re.IGNORECASE,
 )
 
@@ -59,14 +63,15 @@ async def policy_refusal_text(page) -> str | None:
 # La card de error trae tres botones; el útil es "Reutilizar instrucción":
 # devuelve al campo TODA la instrucción, incluida la voz elegida.
 _REUSE_RE = re.compile(
-    r"(Reutilizar instrucci|Volver a usar|Reuse (the )?prompt|Reuse instruction)", re.IGNORECASE
+    r"(Reutilizar instrucci|Reutilizar comando|Volver a usar|Reuse (the )?prompt|Reuse instruction)", re.IGNORECASE
 )
-# DOM real de la card (calibrado 2026-07-31): tres botones, cada uno con su
-# ligadura de ícono y una etiqueta accesible oculta.
+# DOM real de la card (calibrado 2026-07-31, revisto 2026-10-10): tres botones,
+# cada uno con su ligadura de ícono (<i> ou <mat-icon> conforme a versão) e
+# una etiqueta accesible oculta. Em PT o botão útil diz "Reutilizar comando".
 #   refresh        -> "Reintentar"
-#   undo           -> "Reutilizar instrucción"   <- el que sirve
+#   undo           -> "Reutilizar instrucción" / "Reutilizar comando"   <- el que sirve
 #   delete_forever -> "Borrar"
-_REUSE_ICON = 'button:has(i:text-is("undo"))'
+_REUSE_ICON = 'button:has(:is(i, mat-icon):text-is("undo"))'
 
 
 async def error_card_count(page) -> int:

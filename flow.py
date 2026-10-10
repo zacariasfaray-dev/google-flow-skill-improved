@@ -245,6 +245,19 @@ async def _submit_image(prompt, ratio, model, image) -> None:
         await flow.submit_prompt(prompt)
 
 
+async def _wait_mount(pre, tries=15):
+    """A card de loading monta-se logo ao enviar; sem card nova o submit foi
+    engolido (Flow saturado). Devolve True se o canvas cresceu."""
+    for _ in range(tries):
+        await asyncio.sleep(2)
+        try:
+            if await flow.get_canvas_count() > pre:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 async def _run_image_pipeline(project_dir, jobs, total, d_ratio, d_img_model, gap):
     submitted = []
     results = []
@@ -260,10 +273,19 @@ async def _run_image_pipeline(project_dir, jobs, total, d_ratio, d_img_model, ga
             results.append({"name": name, "type": "image", "ok": False, "error": err})
             continue
         try:
+            pre = await flow.get_canvas_count()
             await _submit_image(
                 prompt, ratio, model,
                 _resolve_asset(project_dir, job.get("image")),
             )
+            if not await _wait_mount(pre):
+                print("  [pipeline] sem card nova no canvas — a reenviar uma vez...")
+                await _submit_image(
+                    prompt, ratio, model,
+                    _resolve_asset(project_dir, job.get("image")),
+                )
+                if not await _wait_mount(pre, tries=5):
+                    raise Exception("o envio não montou card no canvas (Flow saturado?)")
             submitted.append({"name": name, "ratio": ratio})
             print(f"  enviado (pipeline {i}/{total})")
         except Exception as e:
@@ -284,6 +306,15 @@ async def _run_image_pipeline(project_dir, jobs, total, d_ratio, d_img_model, ga
         ready = await flow.wait_for_n_images(n, timeout_ms=120000 + n * 90000)
     except Exception as e:
         print(f"  [pipeline] recolha parcial: {e}")
+        try:
+            debug_dir = project_dir / "_debug"
+            debug_dir.mkdir(exist_ok=True)
+            page = await flow.get_page()
+            await page.screenshot(path=str(debug_dir / "_collect.png"))
+            (debug_dir / "_collect.html").write_text(await page.content(), encoding="utf-8")
+            print(f"  Diagnóstico guardado en {debug_dir}")
+        except Exception as debug_error:
+            print(f"  No se pudo guardar el diagnóstico: {debug_error}")
         try:
             ready = await flow.count_ready_images()
         except Exception:

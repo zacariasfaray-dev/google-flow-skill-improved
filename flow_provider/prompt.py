@@ -6,6 +6,8 @@ NO un input/textarea. No usar .fill() — usar .click() + Ctrl+A + keyboard.inse
 El texto NUNCA se teclea con keyboard.type(): cada \n sería un Enter y Flow enviaría
 la generación a media escritura. Solo el `@` va tecleado, porque dispara el popover.
 """
+import asyncio
+import random
 import re
 
 from .browser import get_page
@@ -34,7 +36,7 @@ async def submit_prompt(prompt: str) -> None:
     await page.keyboard.press("Control+a")
     await page.keyboard.press("Delete")
     await page.keyboard.insert_text(prompt)
-    await page.wait_for_timeout(300)
+    await asyncio.sleep(random.uniform(0.6, 1.2))
 
     # Click submit
     print("    [prompt] Enviando generación (clic en botón flecha)...")
@@ -78,6 +80,7 @@ async def submit_segments_with_voice(segments: list[dict], voice: str | None = N
     await page.wait_for_timeout(300)
     if voice:
         await select_voice(voice, voice_sample if voice_sample is not None else DEFAULT_VOICE_SAMPLE)
+    await asyncio.sleep(random.uniform(0.6, 1.2))
     await page.locator(SEL_SUBMIT).first.click()
 
 
