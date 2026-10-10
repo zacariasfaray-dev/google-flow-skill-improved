@@ -412,42 +412,63 @@ async def cmd_batch(args) -> int:
             name = job.get("name") or f"{jtype}_{i:02d}"
             prompt = job.get("prompt", "")
             ratio = job.get("ratio", d_ratio)
+            max_job_retries = int(job.get("max_retries", defaults.get("max_retries", 5)))
             print(f"\n--- [{i}/{len(jobs)}] {jtype} :: {name} ---")
-            try:
-                if jtype == "image":
-                    out_path = _out_path(project_dir, name, "png")
-                    saved = await _gen_image(
-                        prompt, ratio, job.get("model", d_img_model),
-                        int(job.get("count", 1)),
-                        _resolve_asset(project_dir, job.get("image")), out_path,
-                    )
-                elif jtype == "video":
-                    out_path = _out_path(project_dir, name, "mp4")
-                    saved = await _gen_video(
-                        prompt, ratio, job.get("model", d_vid_model),
-                        int(job.get("count", 1)),
-                        _resolve_asset(project_dir, job.get("start")),
-                        _resolve_asset(project_dir, job.get("end")), out_path,
-                        job.get("duration", d_vid_duration),
-                    )
-                else:
-                    print(f"  tipo desconocido '{jtype}', saltando.")
-                    continue
-                print(f"  OK -> {saved}")
-                results.append({"name": name, "type": jtype, "file": saved, "ok": True})
-            except Exception as e:
-                print(f"  ERROR en '{name}': {e}")
-                debug_dir = project_dir / "_debug"
+            
+            job_ok = False
+            for retry_num in range(max_job_retries + 1):
+                if retry_num > 0:
+                    retry_delay = min(15 * retry_num, 90)
+                    print(f"  [retry] Tentativa {retry_num + 1}/{max_job_retries + 1} para '{name}' em {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
                 try:
-                    debug_dir.mkdir(exist_ok=True)
-                    page = await flow.get_page()
-                    debug_name = f"{i:02d}_{_safe(name)}"
-                    await page.screenshot(path=str(debug_dir / f"{debug_name}.png"))
-                    (debug_dir / f"{debug_name}.html").write_text(await page.content(), encoding="utf-8")
-                    print(f"  Diagnóstico guardado en {debug_dir}")
-                except Exception as debug_error:
-                    print(f"  No se pudo guardar el diagnóstico: {debug_error}")
-                results.append({"name": name, "type": jtype, "ok": False, "error": str(e)})
+                    if jtype == "image":
+                        out_path = _out_path(project_dir, name, "png")
+                        saved = await _gen_image(
+                            prompt, ratio, job.get("model", d_img_model),
+                            int(job.get("count", 1)),
+                            _resolve_asset(project_dir, job.get("image")), out_path,
+                        )
+                    elif jtype == "video":
+                        out_path = _out_path(project_dir, name, "mp4")
+                        saved = await _gen_video(
+                            prompt, ratio, job.get("model", d_vid_model),
+                            int(job.get("count", 1)),
+                            _resolve_asset(project_dir, job.get("start")),
+                            _resolve_asset(project_dir, job.get("end")), out_path,
+                            job.get("duration", d_vid_duration),
+                        )
+                    else:
+                        print(f"  tipo desconocido '{jtype}', saltando.")
+                        break
+                    print(f"  OK -> {saved}")
+                    results.append({"name": name, "type": jtype, "file": saved, "ok": True})
+                    job_ok = True
+                    break
+                except Exception as e:
+                    err_msg = str(e)
+                    is_policy = "política" in err_msg.lower() or "policy" in err_msg.lower()
+                    if retry_num < max_job_retries:
+                        tipo_erro = "política" if is_policy else "geração"
+                        print(f"  ⚠️ Erro de {tipo_erro} em '{name}': {err_msg[:150]}")
+                        print(f"  [retry] Será retentado automaticamente...")
+                        continue
+                    # Última tentativa falhou
+                    print(f"  ERROR FINAL em '{name}' após {max_job_retries + 1} tentativas: {e}")
+                    debug_dir = project_dir / "_debug"
+                    try:
+                        debug_dir.mkdir(exist_ok=True)
+                        page = await flow.get_page()
+                        debug_name = f"{i:02d}_{_safe(name)}"
+                        await page.screenshot(path=str(debug_dir / f"{debug_name}.png"))
+                        (debug_dir / f"{debug_name}.html").write_text(await page.content(), encoding="utf-8")
+                        print(f"  Diagnóstico guardado en {debug_dir}")
+                    except Exception as debug_error:
+                        print(f"  No se pudo guardar el diagnóstico: {debug_error}")
+            
+            if not job_ok and jtype in ("image", "video"):
+                results.append({"name": name, "type": jtype, "ok": False, "error": err_msg})
+
     finally:
         await flow.shutdown()
 
@@ -519,8 +540,9 @@ def build_parser() -> argparse.ArgumentParser:
     pb = sub.add_parser("batch", help="Ejecutar guion JSON de varios trabajos.")
     pb.add_argument("jobfile")
     pb.add_argument("--out", default=str(DEFAULT_OUT))
-    pb.add_argument("--delay", type=int, default=25, help="Segundos de espera entre cada generación (defecto: 25s).")
-    pb.add_argument("--trigger-percent", type=int, default=25, help="Porcentaje de progreso para disparar el siguiente prompt (defecto: 25%).")
+    pb.add_argument("--delay", type=int, default=25, help="Segundos de espera entre cada generacion (defecto: 25s).")
+    pb.add_argument("--trigger-percent", type=int, default=25, help="Porcentaje de progreso para disparar el siguiente prompt (defecto: 25).")
+
 
 
 

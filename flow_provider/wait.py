@@ -303,33 +303,65 @@ async def _wait_for_media(media_sel: str, kind: str, timeout_ms: int,
                           max_retries: int, pre_submit_count) -> None:
     page = await get_page()
     pre_errors = await error_card_count(page)
+    # max_retries para erros de saturação; erros de política fazem retry
+    # indefinidamente com delay crescente até dar certo.
+    policy_retries = 0
+    MAX_POLICY_RETRIES = 10  # limite de segurança para não ficar em loop eterno
 
-    for intento in range(max_retries + 1):
+    for intento in range(max_retries + 1 + MAX_POLICY_RETRIES):
         estado = await _poll_until_ready(page, media_sel, pre_submit_count, pre_errors, timeout_ms)
         if estado == "ok":
             return
-        # Rechazo por política: Flow NO lo cobra y repetir lo mismo no sirve —
-        # se dice exactamente lo que dijo Flow en vez de esperar/reintentar.
-        # `await` obligatorio: sin él `policy_refusal_text` devuelve una
-        # corrutina (siempre truthy) y TODO fallo se reportaba como rechazo por
-        # política, con "<coroutine object ...>" en vez del texto real, sin
-        # dejar que la recuperación de saturación llegara a intentarlo.
+        
         recusado = await policy_refusal_text(page)
         if recusado:
-            raise Exception(f"Flow recusou a geração por política (não foi cobrado): {recusado}")
-        if intento >= max_retries:
+            policy_retries += 1
+            if policy_retries > MAX_POLICY_RETRIES:
+                raise Exception(
+                    f"Flow recusou a geração por política {MAX_POLICY_RETRIES} vezes seguidas. "
+                    f"Última mensagem: {recusado}"
+                )
+            # Delay crescente com aleatoriedade para evitar bloqueios repetidos
+            espera = random.uniform(8.0, 15.0) * policy_retries
+            print(f"  [flow] ⚠️ Erro de política ({policy_retries}/{MAX_POLICY_RETRIES}): {recusado[:120]}")
+            print(f"  [flow] Reenviando em {espera:.0f}s (a geração por política NÃO é cobrada)...")
+            await asyncio.sleep(espera)
+            # Tentar reutilizar a instrução e reenviar
+            if not await _reuse_instruction_and_resend(page, policy_retries):
+                # Fallback: reescrever o prompt diretamente e submeter de novo
+                print(f"  [flow] Botão 'Reutilizar' não encontrado. Tentando reenviar...")
+                from .prompt import SEL_SUBMIT
+                submit = page.locator(SEL_SUBMIT).first
+                try:
+                    if await submit.count() > 0:
+                        await submit.click()
+                        await page.wait_for_timeout(2000)
+                    else:
+                        raise Exception(
+                            f"Flow recusou por política e não foi possível reenviar: {recusado}"
+                        )
+                except Exception:
+                    raise Exception(
+                        f"Flow recusou por política e não foi possível reenviar: {recusado}"
+                    )
+            pre_errors = await error_card_count(page)
+            continue
+        
+        # Erro de saturação (não é política)
+        sat_intento = intento - policy_retries
+        if sat_intento >= max_retries:
             raise Exception(
                 f"Generación de {kind} falló {max_retries + 1} veces seguidas. "
                 "Flow reporta: 'No se pudo generar' (suele ser saturación)."
             )
-        print(f"  [flow] Error de generación ({intento + 1}/{max_retries + 1}). Recuperando...")
-        if not await _reuse_instruction_and_resend(page, intento):
+        print(f"  [flow] Error de generación ({sat_intento + 1}/{max_retries + 1}). Recuperando...")
+        if not await _reuse_instruction_and_resend(page, sat_intento):
             raise Exception(
                 "Flow reporta 'No se pudo generar' y no pude reutilizar la instrucción."
             )
-        # La card de error nueva pasa a formar parte del paisaje: si no se
-        # recuenta, el siguiente poll la volvería a leer como fallo inmediato.
+        # La card de error nueva pasa a formar parte del paisaje
         pre_errors = await error_card_count(page)
+
 
 
 async def wait_for_image(timeout_ms: int = 120000, max_retries: int = 2, pre_submit_count: int | None = None) -> None:

@@ -72,10 +72,15 @@ async def _open_card_menu(page, card, is_video: bool = False, caller: str = "dow
     dl_sel = _sel_menu_item("download")
     prefix = "[download 2/5]" if caller == "download" else "[cleanup]"
 
-    # Si el menú de descarga ya está visible en pantalla, no hacer nada
-    if await page.locator(dl_sel).count() > 0 and await page.locator(dl_sel).first.is_visible():
-        print(f"  {prefix} Menú de acciones ya desplegado.")
-        return
+    # Fecha qualquer menu residual do download anterior: um menu aberto
+    # pertence à card ANTERIOR e clicar nele não descarrega esta card
+    # (foi a causa dos timeouts de 60s nos batches multi-imagem — o
+    # "Menú ya desplegado" retornava cedo e o clique caía no menu velho).
+    try:
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.4)
+    except Exception:
+        pass
 
     # Si hay algún menú residual abierto (ej. menú de "Borrar" de clic derecho previo), cerrarlo con Escape
     try:
@@ -198,6 +203,11 @@ def _save_to_dest(src_path: Path | str, dest_path: Path | str) -> None:
 _JS_SRC_CARD = """el => Array.from(el.querySelectorAll('img'))
     .map(i => i.currentSrc || i.src)
     .filter(u => typeof u === 'string' && u.includes('/asb/'))"""
+# Pipeline multi-card: o Flow serve as miniaturas via flow-content.google
+# (assinadas, sem /asb/ no DOM) — qualquer src http da card serve.
+_JS_SRC_CARD_ALL = """el => Array.from(el.querySelectorAll('img'))
+    .map(i => i.currentSrc || i.src)
+    .filter(u => typeof u === 'string' && u.startsWith('http'))"""
 _JS_SRC_ALL = """() => Array.from(document.querySelectorAll('img'))
     .map(i => i.currentSrc || i.src)
     .filter(u => typeof u === 'string' && u.includes('/asb/'))"""
@@ -302,7 +312,7 @@ async def _image_via_dom(page, card, output_path: str, ratio=None, timeout_s: in
     while True:
         srcs: list[str] = []
         try:
-            card_srcs = await card.evaluate(_JS_SRC_CARD)
+            card_srcs = await card.evaluate(_JS_SRC_CARD_ALL if strict else _JS_SRC_CARD)
         except Exception:
             card_srcs = []
         if strict:
