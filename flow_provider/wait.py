@@ -367,3 +367,80 @@ async def wait_for_video(timeout_ms: int = 180000, max_retries: int = 2, pre_sub
         )
     except Exception:
         pass  # Fallback: Flow a veces renderiza miniatura y oculta src
+
+
+# ---------------------------------------------------------------------------
+# PIPELINE — submits sobrepostos (vários prompts enviados sem esperar cada um)
+# ---------------------------------------------------------------------------
+_JS_READY_IMAGES = """() => {
+    const cards = document.querySelectorAll('flow-grid-tile-container, flow-tile-container, [aria-roledescription="draggable"]');
+    let ready = 0;
+    for (const card of cards) {
+        const t = (card.innerText || '');
+        if (/\\b\\d+%\\b/.test(t)) continue;
+        const spins = card.querySelectorAll('mat-progress-spinner, mat-spinner, flow-loading-indicator, [role="progressbar"]');
+        let busy = false;
+        for (const sp of spins) {
+            const st = window.getComputedStyle(sp);
+            if (st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0' && (sp.offsetWidth > 0 || sp.offsetHeight > 0)) { busy = true; break; }
+        }
+        if (busy) continue;
+        const img = card.querySelector('flow-image-tile img.image, flow-image-tile img, img.image');
+        if (img && img.complete && img.naturalWidth > 0) ready += 1;
+    }
+    return ready;
+}"""
+
+
+async def count_ready_images() -> int:
+    """Nº de cards de imagem PRONTAS agora (sem % nem spinner, bitmap válido)."""
+    page = await get_page()
+    try:
+        return int(await page.evaluate(_JS_READY_IMAGES))
+    except Exception:
+        return 0
+
+
+async def wait_for_n_images(n: int, timeout_ms: int = 300000, max_retries: int = 2) -> int:
+    """Espera até haver `n` imagens prontas (pipeline: os submits já foram feitos).
+
+    Recupera de saturação como o modo sequencial (reutilizar-e-reenviar, até
+    `max_retries` reenvios no total). Recusa por política lança de imediato
+    (o Flow não cobra nesses casos). Devolve o nº de prontas; lança
+    TimeoutError se o prazo acabar antes de chegar a `n`.
+    """
+    page = await get_page()
+    pre_errors = await error_card_count(page)
+    start = time.monotonic()
+    deadline = start + timeout_ms / 1000
+    resends = 0
+    last_log = -10
+    while time.monotonic() < deadline:
+        ready = await count_ready_images()
+        elapsed = int(time.monotonic() - start)
+        if ready >= n:
+            print(f"    [wait] {ready}/{n} imagens prontas ({elapsed}s). A assentar (3s)...")
+            await asyncio.sleep(3.0)
+            return ready
+        if await error_card_count(page) > pre_errors:
+            recusado = await policy_refusal_text(page)
+            if recusado:
+                raise Exception(f"Flow recusou a geração por política (não foi cobrado): {recusado}")
+            if resends >= max_retries:
+                raise Exception(
+                    f"Pipeline: {ready}/{n} prontas; Flow reporta 'No se pudo generar' "
+                    f"({max_retries + 1} tentativas). Suele ser saturação."
+                )
+            print(f"  [flow] Card de erro no pipeline. A recuperar ({resends + 1}/{max_retries + 1})...")
+            if not await _reuse_instruction_and_resend(page, resends):
+                raise Exception(
+                    "Flow reporta 'No se pudo generar' y no pude reutilizar la instrucción."
+                )
+            resends += 1
+            pre_errors = await error_card_count(page)
+            continue
+        if elapsed - last_log >= 10:
+            last_log = elapsed
+            print(f"    [wait] Pipeline: {ready}/{n} imagens prontas ({elapsed}s)...")
+        await asyncio.sleep(2)
+    raise TimeoutError(f"Pipeline: só {await count_ready_images()}/{n} imagens prontas em {timeout_ms // 1000}s")
