@@ -89,8 +89,7 @@ async def generate_video_from_frames(prompt: str, start_path: str, end_path: str
     await create_project()
     await select_video_mode(mode="fotogramas", model=model, aspect_ratio=ratio, count=count)
     await upload_frame(start_path, slot="initial")
-    import asyncio
-    await asyncio.sleep(3)
+    # Eliminado sleep innecesario ya que upload_frame ya espera a que el frame esté listo
     await upload_frame(end_path, slot="final")
     
     pre_submit = await get_canvas_count()

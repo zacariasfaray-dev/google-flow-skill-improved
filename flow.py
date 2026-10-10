@@ -15,11 +15,12 @@ Comandos
   python flow.py status
       Dice si ya hay sesion guardada.
 
-  python flow.py image --prompt "..." [--ratio 9:16] [--model "Nano Banana 2"]
+  python flow.py image --prompt "..." [--ratio 9:16] [--model "Nano Banana 2 Lite"]
                         [--image referencia.png] [--name escena1] [--out outputs]
       Genera UNA imagen (texto->imagen, o imagen+prompt->imagen si das --image).
 
   python flow.py video --prompt "..." [--ratio 9:16] [--model "Veo 3.1 - Lite"]
+                        [--duration 8s]
                         [--start frame.png] [--end frame_final.png]
                         [--name escena1] [--out outputs]
       Genera UN video. Sin --start = texto->video. Con --start = anima esa
@@ -31,13 +32,14 @@ Comandos
 
 Modelos validos
 ---------------
-  Imagen: "Nano Banana 2", "Nano Banana Pro", "Imagen 4"
-  Video : "Veo 3.1 - Lite", "Veo 3.1 - Fast", "Veo 3.1 - Quality", "Omni Flash"
+  Imagen: "Nano Banana 2 Lite", "Nano Banana 2", "Nano Banana Pro", "Imagen 4"
+  Video : "Veo 3.1 - Lite", "Veo 3.1 - Fast", "Veo 3.1 - Quality", "Omni 1.1 Flash"
   Ratios: "9:16", "16:9", "1:1", "4:3", "3:4"
 """
 import argparse
 import asyncio
 import json
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -56,7 +58,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 BASE_DIR = Path(__file__).parent.resolve()
 DEFAULT_OUT = BASE_DIR / "outputs"
-FLOW_URL = "https://labs.google/fx/es-419/tools/flow"
+# URL base de Flow - se adapta según el locale
+FLOW_BASE_URL = "https://labs.google/fx"
 
 
 # ---------------------------------------------------------------------------
@@ -108,47 +111,74 @@ def session_exists() -> bool:
 async def cmd_login(_args) -> int:
     profile = Path(settings.FLOW_CHROME_PROFILE)
     profile.mkdir(parents=True, exist_ok=True)
-    print("=== LOGIN GOOGLE FLOW ===")
-    print(f"Perfil persistente: {profile}")
-    print("Se abrira Chrome. Inicia sesion con tu cuenta de Google.")
-    print("Cuando veas el boton 'Proyecto nuevo', el script guarda y cierra solo.")
+    
+    # Limpeza preventiva de travas de perfil do Chrome
+    for lock_name in ["SingletonLock", "lock", "Lock"]:
+        lock_file = profile / lock_name
+        if lock_file.exists():
+            try:
+                lock_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    print("=== LOGIN GOOGLE FLOW ===", flush=True)
+    print(f"Perfil persistente: {profile}", flush=True)
+    print("Iniciando janela do navegador Chrome...", flush=True)
     print()
 
     async with async_playwright() as p:
-        ctx = await p.chromium.launch_persistent_context(
-            user_data_dir=str(profile),
-            headless=False,
-            channel="chrome",
-            args=["--disable-blink-features=AutomationControlled"],
-            viewport={"width": 1280, "height": 900},
-        )
+        launch_kwargs = {
+            "user_data_dir": str(profile),
+            "headless": False,
+            "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            "viewport": {"width": 1280, "height": 900},
+        }
+        try:
+            ctx = await p.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
+        except Exception as err_chrome:
+            print(f"  (Aviso Chrome nativo: {err_chrome}. Tentando Chromium padrão...)", flush=True)
+            ctx = await p.chromium.launch_persistent_context(**launch_kwargs)
+
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await page.goto(FLOW_URL)
+        locale = _args.locale if hasattr(_args, 'locale') and _args.locale else getattr(settings, 'FLOW_LOCALE', 'es-419')
+        flow_url = f"{FLOW_BASE_URL}/{locale}/tools/flow"
+        print(f"  -> Abrindo URL de login: {flow_url}", flush=True)
+        
+        try:
+            await page.goto(flow_url, wait_until="commit", timeout=60000)
+        except Exception as e:
+            print(f"  -> (Aviso navegação inicial: {e})", flush=True)
 
-        # Poll hasta detectar que ya estamos dentro de Flow logueados.
-        logged = False
-        for i in range(80):  # ~240s
-            await page.wait_for_timeout(3000)
-            url = page.url
-            try:
-                ready = await page.locator('button:has-text("Proyecto nuevo")').count() > 0
-            except Exception:
-                ready = False
-            if ready and "accounts.google" not in url:
-                logged = True
-                print("  -> Sesion detectada. Guardando...")
-                await page.wait_for_timeout(3000)
-                break
-            if i % 5 == 0:
-                print(f"  esperando login... ({url})")
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
 
-        await ctx.close()
+        print("\n" + "="*65, flush=True)
+        print("  NAVEGADOR ABERTO COM SUCESSO!", flush=True)
+        print("  1. Olhe na sua barra de tarefas do Windows e acesse a janela do Chrome.")
+        print("  2. Faça o login na sua conta do Google com calma.")
+        print("  3. Quando terminar o login, pressione ENTER aqui neste terminal.")
+        print("="*65 + "\n", flush=True)
+        
+        # O Chrome fica permanentemente aberto até o usuário decidir pressionar ENTER no terminal
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, input, "  [+] Pressione ENTER aqui no terminal APÓS concluir o login no Chrome: ")
+        except (KeyboardInterrupt, EOFError):
+            pass
 
-    if logged:
-        print("OK: sesion guardada. Ya puedes generar imagenes/videos.")
-        return 0
-    print("AVISO: no se detecto login. Vuelve a correr 'python flow.py login'.")
-    return 1
+        try:
+            await page.wait_for_timeout(1000)
+            print("  -> Salvando sessão e perfil...", flush=True)
+            await ctx.close()
+        except Exception:
+            pass
+
+    print("OK: sessão guardada com sucesso! Agora você já pode gerar imagens e vídeos.", flush=True)
+    return 0
+
+
 
 
 async def cmd_status(_args) -> int:
@@ -163,6 +193,8 @@ async def cmd_status(_args) -> int:
 # Generadores atomicos (asumen proyecto YA abierto)
 # ---------------------------------------------------------------------------
 async def _gen_image(prompt, ratio, model, count, image, out_path) -> str:
+    if count != 1:
+        raise ValueError("Esta CLI descarga una imagen por trabajo. Para un lote, usa varios jobs image con count=1.")
     await flow.select_image_mode(aspect_ratio=ratio, count=count, model=model)
     if image:
         await flow.upload_standalone_image(image)
@@ -172,17 +204,19 @@ async def _gen_image(prompt, ratio, model, count, image, out_path) -> str:
     return await flow.download_latest(out_path, resolution="1K", is_video=False)
 
 
-async def _gen_video(prompt, ratio, model, count, start, end, out_path) -> str:
+async def _gen_video(prompt, ratio, model, count, start, end, out_path, duration=None) -> str:
+    if count != 1:
+        raise ValueError("Esta CLI descarga un video por trabajo. Para un lote, usa varios jobs video con count=1.")
     if start and end:
-        await flow.select_video_mode(mode="fotogramas", model=model, aspect_ratio=ratio, count=count)
+        await flow.select_video_mode(mode="fotogramas", model=model, aspect_ratio=ratio, count=count, duration=duration)
         await flow.upload_frame(start, slot="initial")
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)  # Reducido de 3 a 2 segundos
         await flow.upload_frame(end, slot="final")
     elif start:
-        await flow.select_video_mode(mode="fotogramas", model=model, aspect_ratio=ratio, count=count)
+        await flow.select_video_mode(mode="fotogramas", model=model, aspect_ratio=ratio, count=count, duration=duration)
         await flow.upload_frame(start, slot="initial")
     else:
-        await flow.select_video_mode(mode="texto", model=model, aspect_ratio=ratio, count=count)
+        await flow.select_video_mode(mode="texto", model=model, aspect_ratio=ratio, count=count, duration=duration)
     pre = await flow.get_canvas_count()
     await flow.submit_prompt(prompt)
     await flow.wait_for_video(pre_submit_count=pre)
@@ -219,7 +253,7 @@ async def cmd_video(args) -> int:
     await flow.startup()
     try:
         await flow.create_project()
-        saved = await _gen_video(args.prompt, args.ratio, args.model, args.count, args.start, args.end, out_path)
+        saved = await _gen_video(args.prompt, args.ratio, args.model, args.count, args.start, args.end, out_path, args.duration)
         print(f"OK video -> {saved}")
         return 0
     finally:
@@ -234,8 +268,9 @@ async def cmd_batch(args) -> int:
     data = json.loads(Path(args.jobfile).read_text(encoding="utf-8"))
     defaults = data.get("defaults", {})
     d_ratio = defaults.get("ratio", "9:16")
-    d_img_model = defaults.get("image_model", "Nano Banana 2")
+    d_img_model = defaults.get("image_model", "Nano Banana 2 Lite")
     d_vid_model = defaults.get("video_model", "Veo 3.1 - Lite")
+    d_delay = defaults.get("delay", getattr(args, "delay", 25))
     jobs = data.get("jobs", [])
 
     # Cada proyecto va a su propia subcarpeta: facil de revisar y de borrar.
@@ -244,11 +279,20 @@ async def cmd_batch(args) -> int:
     project_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"BATCH '{project}': {len(jobs)} trabajos. Salida -> {project_dir}")
+    print(f"Intervalo de delay configurado entre trabalhos: {d_delay}s")
     results = []
     await flow.startup()
     try:
         await flow.create_project()
         for i, job in enumerate(jobs, 1):
+            if i > 1:
+                delay_sec = job.get("delay", d_delay)
+                if delay_sec > 0:
+                    print(f"\n[batch] Aguardando {delay_sec}s antes da próxima geração para evitar limites de taxa e erros de política...")
+                    for remaining in range(delay_sec, 0, -5):
+                        print(f"  ... {remaining}s restantes")
+                        await asyncio.sleep(min(5, remaining))
+
             jtype = job.get("type", "image")
             name = job.get("name") or f"{jtype}_{i:02d}"
             prompt = job.get("prompt", "")
@@ -269,6 +313,7 @@ async def cmd_batch(args) -> int:
                         int(job.get("count", 1)),
                         _resolve_asset(project_dir, job.get("start")),
                         _resolve_asset(project_dir, job.get("end")), out_path,
+                        job.get("duration", d_vid_duration),
                     )
                 else:
                     print(f"  tipo desconocido '{jtype}', saltando.")
@@ -277,6 +322,16 @@ async def cmd_batch(args) -> int:
                 results.append({"name": name, "type": jtype, "file": saved, "ok": True})
             except Exception as e:
                 print(f"  ERROR en '{name}': {e}")
+                debug_dir = project_dir / "_debug"
+                try:
+                    debug_dir.mkdir(exist_ok=True)
+                    page = await flow.get_page()
+                    debug_name = f"{i:02d}_{_safe(name)}"
+                    await page.screenshot(path=str(debug_dir / f"{debug_name}.png"))
+                    (debug_dir / f"{debug_name}.html").write_text(await page.content(), encoding="utf-8")
+                    print(f"  Diagnóstico guardado en {debug_dir}")
+                except Exception as debug_error:
+                    print(f"  No se pudo guardar el diagnóstico: {debug_error}")
                 results.append({"name": name, "type": jtype, "ok": False, "error": str(e)})
     finally:
         await flow.shutdown()
@@ -319,6 +374,8 @@ async def cmd_clean(args) -> int:
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="CLI Google Flow (Playwright).")
+    # Agregar argumento de locale al parser principal para que esté disponible en todos los subcomandos
+    p.add_argument("--locale", default=None, help="Locale para la interfaz de Flow (ej: en-US, es-419)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("login", help="Loguearse en Google Flow (una vez).")
@@ -327,7 +384,7 @@ def build_parser() -> argparse.ArgumentParser:
     pi = sub.add_parser("image", help="Generar una imagen.")
     pi.add_argument("--prompt", required=True)
     pi.add_argument("--ratio", default="9:16")
-    pi.add_argument("--model", default="Nano Banana 2")
+    pi.add_argument("--model", default="Nano Banana 2 Lite")
     pi.add_argument("--count", type=int, default=1)
     pi.add_argument("--image", default=None, help="Imagen de referencia para editar.")
     pi.add_argument("--name", default=None)
@@ -338,6 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("--ratio", default="9:16")
     pv.add_argument("--model", default="Veo 3.1 - Lite")
     pv.add_argument("--count", type=int, default=1)
+    pv.add_argument("--duration", default=None, help="Duracion del clip, por ejemplo 8s (si el modelo la admite).")
     pv.add_argument("--start", default=None, help="Fotograma inicial (imagen).")
     pv.add_argument("--end", default=None, help="Fotograma final (imagen).")
     pv.add_argument("--name", default=None)
@@ -346,6 +404,8 @@ def build_parser() -> argparse.ArgumentParser:
     pb = sub.add_parser("batch", help="Ejecutar guion JSON de varios trabajos.")
     pb.add_argument("jobfile")
     pb.add_argument("--out", default=str(DEFAULT_OUT))
+    pb.add_argument("--delay", type=int, default=25, help="Segundos de espera entre cada generación (defecto: 25s).")
+
 
     pc = sub.add_parser("clean", help="Borrar resultados de outputs.")
     pc.add_argument("project", nargs="?", default=None,
@@ -372,7 +432,7 @@ EASTER_EGG = r"""
    _   _ _   _ ____   ___
   | \ | | | | |  _ \ / _ \
   |  \| | | | | |_) | | | |
-  | |\  | |_| |  _ <| |_| |
+  | |\  | |_| |  <| |_| |
   |_| \_|\___/|_| \_\\___/     x   B R P L
 
   Google Flow Skill -- forjado por NURO para BRPL.
@@ -385,6 +445,9 @@ def main() -> int:
         print(EASTER_EGG)
         return 0
     args = build_parser().parse_args()
+    # Si se pasa --locale en la linea de comandos, actualizar settings.FLOW_LOCALE para las funciones del provider
+    if hasattr(args, "locale") and args.locale:
+        settings.FLOW_LOCALE = args.locale
     return asyncio.run(HANDLERS[args.cmd](args))
 
 

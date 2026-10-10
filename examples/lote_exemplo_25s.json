@@ -1,0 +1,27 @@
+{
+  "project": "meu_lote_25s",
+  "defaults": {
+    "delay": 25,
+    "ratio": "9:16",
+    "image_model": "Nano Banana 2 Lite",
+    "video_model": "Veo 3.1 - Lite"
+  },
+  "jobs": [
+    {
+      "type": "image",
+      "name": "foto_01",
+      "prompt": "Um gato astronauta com capacete de vidro brilhante no espaço sideral com estrelas coloridas ao fundo"
+    },
+    {
+      "type": "image",
+      "name": "foto_02",
+      "prompt": "Um robô futurista em uma cidade cyberpunk iluminada com luzes neon sob chuva fina"
+    },
+    {
+      "type": "video",
+      "name": "video_01",
+      "start": "foto_01",
+      "prompt": "O gato astronauta acena com a pata devagar flutuando na gravidade zero"
+    }
+  ]
+}

@@ -26,3 +26,6 @@ FLOW_CHROME_PROFILE = os.getenv(
 
 # Modo legacy (no se usa): sesion via storage_state JSON.
 FLOW_SESSION_FILE = os.getenv("FLOW_SESSION_FILE", "")
+
+# Locale para la interfaz de Flow (es-419 por defecto para compatibilidad hacia atrás)
+FLOW_LOCALE = os.getenv("FLOW_LOCALE", "es-419")
