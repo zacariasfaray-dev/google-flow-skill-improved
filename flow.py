@@ -201,7 +201,7 @@ async def _gen_image(prompt, ratio, model, count, image, out_path) -> str:
     pre = await flow.get_canvas_count()
     await flow.submit_prompt(prompt)
     await flow.wait_for_image(pre_submit_count=pre)
-    return await flow.download_latest(out_path, resolution="1K", is_video=False)
+    return await flow.download_latest(out_path, resolution="1K", is_video=False, ratio=ratio)
 
 
 async def _gen_video(prompt, ratio, model, count, start, end, out_path, duration=None) -> str:
@@ -221,6 +221,103 @@ async def _gen_video(prompt, ratio, model, count, start, end, out_path, duration
     await flow.submit_prompt(prompt)
     await flow.wait_for_video(pre_submit_count=pre)
     return await flow.download_latest(out_path, resolution="720p", is_video=True)
+
+
+# ---------------------------------------------------------------------------
+# PIPELINE de imagens — submits sobrepostos
+# ---------------------------------------------------------------------------
+# Em vez de enviar → esperar ficar pronta → descarregar → próximo, o pipeline
+# dispara todos os prompts espaçados `gap` segundos (o Chrome fica aberto e o
+# Flow gera em fundo), espera o conjunto e descarrega no fim. O mapeamento
+# job<->card assume ordem de conclusão = ordem de envio — sempre certo com
+# prompts iguais (o caso da geração em massa) e o comportamento normal do Flow
+# com prompts diferentes.
+async def _submit_image(prompt, ratio, model, image) -> None:
+    """Só configura e ENVIA (sem esperar nem descarregar). Uma repetição se o
+    campo ainda estiver preso da geração anterior."""
+    await flow.select_image_mode(aspect_ratio=ratio, count=1, model=model)
+    if image:
+        await flow.upload_standalone_image(image)
+    try:
+        await flow.submit_prompt(prompt)
+    except Exception:
+        await asyncio.sleep(10)
+        await flow.submit_prompt(prompt)
+
+
+async def _run_image_pipeline(project_dir, jobs, total, d_ratio, d_img_model, gap):
+    submitted = []
+    results = []
+    for i, job in enumerate(jobs, 1):
+        name = job.get("name") or f"image_{i:02d}"
+        prompt = job.get("prompt", "")
+        ratio = job.get("ratio", d_ratio)
+        model = job.get("model", d_img_model)
+        print(f"\n--- [{i}/{total}] image :: {name} ---")
+        try:
+            await _submit_image(
+                prompt, ratio, model,
+                _resolve_asset(project_dir, job.get("image")),
+            )
+            submitted.append({"name": name, "ratio": ratio})
+            print(f"  enviado (pipeline {i}/{total})")
+        except Exception as e:
+            print(f"  ERROR en '{name}': {e}")
+            results.append({"name": name, "type": "image", "ok": False, "error": str(e)})
+        if i < len(jobs) and gap > 0:
+            print(f"[pipeline] próximo envio em {gap}s (o Chrome fica aberto, a gerar em fundo)...")
+            for remaining in range(gap, 0, -5):
+                print(f"  ... {remaining}s")
+                await asyncio.sleep(min(5, remaining))
+
+    n = len(submitted)
+    if n == 0:
+        return results
+
+    print(f"[pipeline] {n} prompts enviados. A esperar as {n} imagens...")
+    try:
+        ready = await flow.wait_for_n_images(n, timeout_ms=120000 + n * 90000)
+    except Exception as e:
+        print(f"  [pipeline] recolha parcial: {e}")
+        try:
+            ready = await flow.count_ready_images()
+        except Exception:
+            ready = 0
+        if ready <= 0:
+            for s in submitted:
+                results.append({"name": s["name"], "type": "image", "ok": False, "error": str(e)})
+            return results
+        print(f"  [pipeline] {ready}/{n} prontas — a descarregar essas; as restantes ficam como falha.")
+
+    # Descarrega da mais ANTIGA para a mais recente (o DOM ordena da mais nova
+    # para a mais antiga, daí o índice invertido).
+    for i, s in enumerate(submitted):
+        if i >= ready:
+            results.append({"name": s["name"], "type": "image", "ok": False,
+                            "error": f"só {ready}/{n} imagens ficaram prontas no prazo"})
+            continue
+        out_path = _out_path(project_dir, s["name"], "png")
+        try:
+            saved = await flow.download_latest(
+                out_path, resolution="1K", is_video=False, ratio=s["ratio"],
+                card_index=(ready - 1 - i), strict=True,
+            )
+            print(f"  OK -> {saved}")
+            results.append({"name": s["name"], "type": "image", "file": saved, "ok": True})
+        except Exception as e:
+            print(f"  ERROR en '{s['name']}': {e}")
+            debug_dir = project_dir / "_debug"
+            try:
+                debug_dir.mkdir(exist_ok=True)
+                page = await flow.get_page()
+                debug_name = f"{i + 1:02d}_{_safe(s['name'])}"
+                await page.screenshot(path=str(debug_dir / f"{debug_name}.png"))
+                (debug_dir / f"{debug_name}.html").write_text(await page.content(), encoding="utf-8")
+                print(f"  Diagnóstico guardado en {debug_dir}")
+            except Exception as debug_error:
+                print(f"  No se pudo guardar el diagnóstico: {debug_error}")
+            results.append({"name": s["name"], "type": "image", "ok": False, "error": str(e)})
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +381,15 @@ async def cmd_batch(args) -> int:
     await flow.startup()
     try:
         await flow.create_project()
+        # Pipeline: 2+ imagens → envios sobrepostos (sem re-indentação do
+        # caminho sequencial abaixo: o `continue` salta-o por inteiro).
+        only_images = bool(jobs) and len(jobs) > 1 and all(j.get("type", "image") == "image" for j in jobs)
+        if only_images:
+            print(f"[pipeline] {len(jobs)} imagens: envios espaçados {d_delay}s sem esperar por cada uma.")
+            results = await _run_image_pipeline(project_dir, jobs, len(jobs), d_ratio, d_img_model, d_delay)
         for i, job in enumerate(jobs, 1):
+            if only_images:
+                continue
             if i > 1:
                 delay_sec = job.get("delay", d_delay)
                 if delay_sec > 0:

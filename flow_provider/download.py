@@ -393,7 +393,7 @@ async def download_latest(output_path: str, resolution: str = "1K", is_video: bo
     # origen, cookies de la sesion incluidas) y se puede pedir por HTTP.
     # ────────────────────────────────────────────────────────────────────────
     if not is_video:
-        saved0 = await _image_via_dom(page, card, output_path, ratio=ratio)
+        saved0 = await _image_via_dom(page, card, output_path, ratio=ratio, strict=strict)
         if saved0:
             return saved0
 
