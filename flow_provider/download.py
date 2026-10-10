@@ -25,6 +25,16 @@ SEL_DL_RES = {
 }
 
 
+# Pipeline: só tiles COM imagem (exclui cards de erro e spinners). A ordem do
+# DOM é da mais nova para a mais antiga.
+SEL_READY_IMAGE_CARD = (
+    'flow-tile-container:has(flow-image-tile img), '
+    'flow-grid-tile-container:has(flow-image-tile img), '
+    'flow-tile-container:has(img.image), '
+    'flow-grid-tile-container:has(img.image)'
+)
+
+
 def _sel_card(is_video: bool = False) -> str:
     """Card del asset. El filtro `:has(...)` salta las cards de error de Flow,
     que no tienen miniatura."""
@@ -273,13 +283,14 @@ async def _fetch_image_bytes(page, src: str) -> bytes | None:
     return None
 
 
-async def _image_via_dom(page, card, output_path: str, ratio=None, timeout_s: int = 45) -> str | None:
+async def _image_via_dom(page, card, output_path: str, ratio=None, timeout_s: int = 45, strict: bool = False) -> str | None:
     """Estrategia 0: pide el binario del <img> del resultado por HTTP (sin clics).
 
     - Busca en la card Y en toda la página (la lista de resultados es otra zona
       del DOM y su <img> pinta con retardo: por eso hay polling).
     - Con el ratio pedido (16:9…) elige la imagen que cuadra y DESCARTA la
       referencia subida (1:1), que si no se colaba como si fuera la escena.
+    - `strict=True` (pipeline): mira SÓ a card dada, nunca o resto da página.
     Devuelve el path si guardo una imagen valida; None si hay que seguir con el
     flujo UI (nunca lanza).
     """
@@ -294,10 +305,13 @@ async def _image_via_dom(page, card, output_path: str, ratio=None, timeout_s: in
             card_srcs = await card.evaluate(_JS_SRC_CARD)
         except Exception:
             card_srcs = []
-        try:
-            page_srcs = await page.evaluate(_JS_SRC_ALL)
-        except Exception:
+        if strict:
             page_srcs = []
+        else:
+            try:
+                page_srcs = await page.evaluate(_JS_SRC_ALL)
+            except Exception:
+                page_srcs = []
         for u in list(card_srcs or []) + list(page_srcs or []):
             if u and u not in srcs:
                 srcs.append(u)
@@ -346,11 +360,14 @@ async def _image_via_dom(page, card, output_path: str, ratio=None, timeout_s: in
     return output_path
 
 
-async def download_latest(output_path: str, resolution: str = "1K", is_video: bool = False, ratio=None) -> str:
+async def download_latest(output_path: str, resolution: str = "1K", is_video: bool = False, ratio=None, card_index: int = 0, strict: bool = False) -> str:
     """Descarga el último resultado. Retorna el path guardado. Debe llamarse con lock.
 
     `ratio` ('16:9'…) hace que Estrategia 0 elija la imagen que cuadra con lo
-    pedido y descarte la referencia subida (que sigue en el DOM)."""
+    pedido y descarte la referencia subida (que sigue en el DOM).
+    `card_index`/`strict` (pipeline): em vez da card mais nova, descarrega a
+    n-ésima card COM imagem (0 = mais nova); com `strict` a Estrategia 0 mira
+    só essa card. O comportamento por omissão (0/False) é o de sempre."""
     page = await get_page()
 
     # O Flow (PT) abre o detalhe do asset em lightbox por cima do canvas (ver
@@ -364,8 +381,9 @@ async def download_latest(output_path: str, resolution: str = "1K", is_video: bo
     except Exception:
         pass
 
-    print(f"  [download 1/5] Localizando card de {'video' if is_video else 'imagen'}...")
-    card = page.locator(_sel_card(is_video)).first
+    print(f"  [download 1/5] Localizando card de {'video' if is_video else 'imagen'} (índice {card_index if isinstance(card_index, int) and card_index >= 0 else 0})...")
+    _sel = SEL_READY_IMAGE_CARD if (strict and not is_video) else _sel_card(is_video)
+    card = page.locator(_sel).nth(card_index if isinstance(card_index, int) and card_index >= 0 else 0)
     await card.wait_for(state="visible", timeout=30_000)
 
     # ────────────────────────────────────────────────────────────────────────
